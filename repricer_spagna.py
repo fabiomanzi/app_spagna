@@ -58,6 +58,8 @@ def calcola_target_es(costo_un, peso, moltiplicatore):
 
 # --- 3. FUNZIONI API ---
 def applica_nuovi_prezzi(lista_cambiamenti, creds):
+    from sp_api.api import Feeds
+    import io
     obj_feed = Feeds(credentials=creds, marketplace=Marketplaces.ES)
     seller_id = st.secrets["amazon_api"]["seller_id"]
     
@@ -67,7 +69,7 @@ def applica_nuovi_prezzi(lista_cambiamenti, creds):
     
     file_data = io.BytesIO(full_xml.encode('utf-8'))
     try:
-        # Passiamo content_type base per massima compatibilità
+        # Passiamo OBBLIGATORIAMENTE il parametro file e content_type
         doc_res = obj_feed.create_feed_document(file=file_data, content_type="text/xml")
         doc_id = doc_res.payload.get("feedDocumentId")
         
@@ -97,12 +99,6 @@ try:
         lwa_app_id=st.secrets["amazon_api"]["lwa_app_id"], 
         lwa_client_secret=st.secrets["amazon_api"]["lwa_client_secret"]
     )
-    # Aggiungi chiavi AWS se presenti per la firma dei feed
-    if "aws_access_key" in st.secrets["amazon_api"]:
-        creds_global["aws_access_key"] = st.secrets["amazon_api"]["aws_access_key"]
-        creds_global["aws_secret_key"] = st.secrets["amazon_api"]["aws_secret_key"]
-        creds_global["role_arn"] = st.secrets["amazon_api"].get("role_arn")
-
     MIO_ID_GLOBAL = st.secrets["amazon_api"]["seller_id"]
 except:
     st.error("❌ Secrets non configurati correttamente.")
@@ -110,7 +106,7 @@ except:
 
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Analisi e Repricing", "⚙️ Database Master", "💾 Backup", "🔍 Diagnosi Avanzata"])
 
-# --- TAB 1: ANALISI ---
+# --- TAB 1: ANALISI E REPRICER ---
 with tab1:
     f1 = st.file_uploader("Carica File Analisi (SKU + ASIN)", type=['xlsx'], key="up_anal")
     if f1:
@@ -179,8 +175,7 @@ with tab1:
                 if st.button("🚀 APPLICA E INVIA AD AMAZON"):
                     fid, err = applica_nuovi_prezzi([{'sku': p['SKU'], 'price': p['Nuovo']} for p in proposte], creds_global)
                     if fid: st.success(f"✅ Feed inviato! ID: {fid}")
-                    else: st.error(f"❌ Errore: {err}")
-            st.write("### Dettaglio Completo")
+                    else: st.error(f"❌ Errore durante l'invio: {err}")
             st.dataframe(df, use_container_width=True)
 
 # --- TAB 2: DATABASE ---
@@ -209,29 +204,22 @@ with tab3:
 # --- TAB 4: DIAGNOSI AVANZATA ---
 with tab4:
     st.header("🔍 Diagnosi Profonda dei Permessi")
-    st.info("Questo test serve a capire perché ricevi 'Unauthorized' durante l'invio.")
-    
     if st.button("Esegui Analisi Tecnica"):
-        # Test 1: Lettura
+        # Test Lettura
         try:
             obj_p = Products(credentials=creds_global, marketplace=Marketplaces.ES)
             obj_p.get_item_offers("B00005N5PF", item_condition='New', item_type='Asin')
             st.success("1. Lettura (Pricing Role): FUNZIONANTE")
         except Exception as e:
-            st.error(f"1. Lettura (Pricing Role): FALLITA - {e}")
+            st.error(f"1. Lettura: FALLITA - {e}")
 
-        # Test 2: Scrittura (Creazione Documento)
+        # Test Scrittura Reale (inviamo un file minimo)
         try:
             obj_f = Feeds(credentials=creds_global, marketplace=Marketplaces.ES)
-            res = obj_f.create_feed_document(content_type="text/xml")
-            st.success("2. Scrittura (Product Listing Role): FUNZIONANTE")
+            test_file = io.BytesIO(b"test")
+            res = obj_f.create_feed_document(file=test_file, content_type="text/xml")
+            st.success(f"2. Scrittura (Product Listing): FUNZIONANTE! ID: {res.payload.get('feedDocumentId')}")
             st.balloons()
         except Exception as e:
-            err_msg = str(e)
-            st.error(f"2. Scrittura (Product Listing Role): FALLITA")
-            st.code(err_msg)
-            
-            if "Forbidden" in err_msg or "Unauthorized" in err_msg:
-                st.warning("👉 CONCLUSIONE: Il token è valido ma Amazon non ti permette di SCRIVERE. Devi rigenerare il token nel Seller Central DOPO aver salvato i ruoli 'Product Listing'.")
-            elif "SignatureDoesNotMatch" in err_msg:
-                st.warning("👉 CONCLUSIONE: Le tue chiavi AWS (Access/Secret Key) non sono corrette o non hanno i permessi IAM per SP-API.")
+            st.error(f"2. Scrittura: FALLITA")
+            st.code(str(e))
