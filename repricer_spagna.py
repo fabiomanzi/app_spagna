@@ -214,11 +214,24 @@ with tab3:
         st.download_button("Scarica Backup", df_visual.to_csv(index=False), "backup.csv")
 
 # --- TAB 4: TEST CONNESSIONE ---
+# --- TAB 4: TEST CONNESSIONE AVANZATO ---
 with tab4:
-    if st.button("Esegui Diagnostica"):
+    if st.button("Esegui Diagnostica Completa"):
         try:
-            obj_test = Products(credentials=creds_global, marketplace=Marketplaces.ES)
-            obj_test.get_item_offers("B00005N5PF", item_condition='New', item_type='Asin')
-            st.success("✅ Connessione Amazon SP-API OK!")
+            # Test Lettura
+            obj_p = Products(credentials=creds_global, marketplace=Marketplaces.ES)
+            obj_p.get_item_offers("B00005N5PF", item_condition='New', item_type='Asin')
+            st.success("✅ Test Lettura (Pricing): OK")
+            
+            # Test Scrittura (Proviamo a creare un documento feed vuoto)
+            obj_f = Feeds(credentials=creds_global, marketplace=Marketplaces.ES)
+            try:
+                # Chiediamo solo il permesso di creare un documento, senza inviare nulla
+                obj_f.create_feed_document(content_type="text/xml; charset=UTF-8")
+                st.success("✅ Test Scrittura (Product Listing): OK")
+            except Exception as fe:
+                st.error(f"❌ Errore Scrittura: {fe}")
+                st.info("Se la lettura è OK ma la scrittura è Forbidden, devi rigenerare il Refresh Token dopo aver controllato i Roles.")
+                
         except Exception as e:
-            st.error(f"❌ Errore connessione: {e}")
+            st.error(f"❌ Errore Generale: {e}")
