@@ -44,14 +44,15 @@ def calcola_target_es(costo_un, peso, moltiplicatore):
 
 # --- 3. FUNZIONI API ---
 def applica_nuovi_prezzi(lista_cambiamenti, creds):
-    # Marketplace ID Spagna: A1RKKUPIHCS9HS
-    marketplace_spagna = "A1RKKUPIHCS9HS"
+    from sp_api.api import Feeds
+    from sp_api.base import Marketplaces, FeedType
+    import io
     
-    # Inizializziamo l'oggetto Feed forzando la regione Europa
+    # Inizializzazione identica alla diagnosi che è risultata OK
     obj_feed = Feeds(credentials=creds, marketplace=Marketplaces.ES)
     seller_id = st.secrets["amazon_api"]["seller_id"]
     
-    # Costruzione XML Price Feed
+    # Costruzione XML (Standard Amazon)
     xml_header = (
         '<?xml version="1.0" encoding="utf-8"?>'
         '<AmazonEnvelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
@@ -73,23 +74,24 @@ def applica_nuovi_prezzi(lista_cambiamenti, creds):
     
     full_xml = xml_header + messages + "</AmazonEnvelope>"
     file_data = io.BytesIO(full_xml.encode('utf-8'))
-    
+
     try:
-        # FASE 1: Creazione Documento (Caricamento dati)
+        # FASE 1: Creazione Documento (Quella che ora funziona!)
         doc_res = obj_feed.create_feed_document(file=file_data, content_type="text/xml")
         doc_id = doc_res.payload.get("feedDocumentId")
         
-        # FASE 2: Invio Feed (Esecuzione)
-        # Usiamo i nomi dei parametri corretti per la tua versione e specifichiamo la lista marketplace_ids
+        # FASE 2: Invio Feed 
+        # NOTA: Usiamo marketplaceIds (senza underscore) perché spesso richiesto in V20210630
         res = obj_feed.create_feed(
             feed_type=FeedType.POST_PRODUCT_PRICING_DATA,
             input_feed_document_id=doc_id,
-            marketplace_ids=[marketplace_spagna] 
+            marketplaceIds=["A1RKKUPIHCS9HS"] 
         )
+        
         return res.payload.get("feedId"), None
+
     except Exception as e:
         return None, f"Dettaglio Tecnico: {str(e)}"
-
 def recupera_prezzi_es(asin, creds):
     obj_p = Products(credentials=creds, marketplace=Marketplaces.ES)
     try:
