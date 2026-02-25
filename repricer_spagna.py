@@ -75,32 +75,38 @@ def recupera_prezzi_indistruttibile(asin, creds):
     return [], "Timeout"
 
 def applica_nuovi_prezzi(lista_cambiamenti, creds):
+    from sp_api.api import Feeds
+    import io
+
     obj_feed = Feeds(credentials=creds, marketplace=Marketplaces.ES)
     seller_id = st.secrets["amazon_api"]["seller_id"]
     
-    # Costruzione XML
+    # 1. Costruzione XML
     xml_header = f'<?xml version="1.0" encoding="utf-8"?><AmazonEnvelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="amzn-envelope.xsd"><Header><DocumentVersion>1.01</DocumentVersion><MerchantIdentifier>{seller_id}</MerchantIdentifier></Header><MessageType>Price</MessageType>'
     messages = ""
     for i, item in enumerate(lista_cambiamenti):
         messages += f"<Message><MessageID>{i+1}</MessageID><Price><SKU>{item['sku']}</SKU><StandardPrice currency='EUR'>{item['price']}</StandardPrice></Price></Message>"
     full_xml = xml_header + messages + "</AmazonEnvelope>"
     
-    # Preparazione file per la libreria
+    # Prepariamo il file come flusso di byte
     file_data = io.BytesIO(full_xml.encode('utf-8'))
 
     try:
-        # Fase 1: Creazione Documento con parametri espliciti 'file' e 'contentType'
+        # 2. Fase A: Creazione Documento (Sintassi snake_case)
+        # Passiamo file e content_type (con l'underscore)
         doc_res = obj_feed.create_feed_document(
             file=file_data, 
-            contentType="text/xml; charset=UTF-8"
+            content_type="text/xml; charset=UTF-8"
         )
+        
         doc_id = doc_res.payload.get("feedDocumentId")
         
-        # Fase 2: Creazione Feed collegato al Document ID
+        # 3. Fase B: Creazione Feed
         res = obj_feed.create_feed(
-            feedType=FeedType.POST_PRODUCT_PRICING_DATA,
-            inputFeedDocumentId=doc_id
+            feed_type=FeedType.POST_PRODUCT_PRICING_DATA,
+            input_feed_document_id=doc_id
         )
+        
         return res.payload.get("feedId"), None
     except Exception as e:
         return None, str(e)
