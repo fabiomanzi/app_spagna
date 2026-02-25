@@ -75,7 +75,8 @@ def recupera_prezzi_indistruttibile(asin, creds):
 
 def applica_nuovi_prezzi(lista_cambiamenti, creds):
     obj_feed = Feeds(credentials=creds, marketplace=Marketplaces.ES)
-    xml_header = f'<?xml version="1.0" encoding="utf-8"?><AmazonEnvelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="amzn-envelope.xsd"><Header><DocumentVersion>1.01</DocumentVersion><MerchantIdentifier>{st.secrets["amazon_api"]["seller_id"]}</MerchantIdentifier></Header><MessageType>Price</MessageType>'
+    seller_id = st.secrets["amazon_api"]["seller_id"]
+    xml_header = f'<?xml version="1.0" encoding="utf-8"?><AmazonEnvelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="amzn-envelope.xsd"><Header><DocumentVersion>1.01</DocumentVersion><MerchantIdentifier>{seller_id}</MerchantIdentifier></Header><MessageType>Price</MessageType>'
     messages = ""
     for i, item in enumerate(lista_cambiamenti):
         messages += f"<Message><MessageID>{i+1}</MessageID><Price><SKU>{item['sku']}</SKU><StandardPrice currency='EUR'>{item['price']}</StandardPrice></Price></Message>"
@@ -88,6 +89,18 @@ def applica_nuovi_prezzi(lista_cambiamenti, creds):
 # --- 5. INTERFACCIA STREAMLIT ---
 st.set_page_config(page_title="Amazon ES Strategic Repricer", layout="wide")
 st.title("🇪🇸 Amazon Spain: Strategic Repricer & Margin Tool")
+
+# Definizione credenziali globale per la sessione
+try:
+    creds_global = dict(
+        refresh_token=st.secrets["amazon_api"]["refresh_token"], 
+        lwa_app_id=st.secrets["amazon_api"]["lwa_app_id"], 
+        lwa_client_secret=st.secrets["amazon_api"]["lwa_client_secret"]
+    )
+    MIO_ID_GLOBAL = st.secrets["amazon_api"]["seller_id"]
+except KeyError:
+    st.error("❌ Credenziali non trovate nei Secrets! Controlla le impostazioni di Streamlit Cloud.")
+    st.stop()
 
 tab1, tab2, tab3 = st.tabs(["📊 Analisi e Repricing", "⚙️ Database Master", "💾 Backup"])
 
@@ -102,10 +115,6 @@ with tab1:
         if st.button("🚀 Avvia Analisi Strategica"):
             results = []
             bar = st.progress(0); status = st.empty()
-            creds = dict(refresh_token=st.secrets["amazon_api"]["refresh_token"], 
-                         lwa_app_id=st.secrets["amazon_api"]["lwa_app_id"], 
-                         lwa_client_secret=st.secrets["amazon_api"]["lwa_client_secret"])
-            MIO_ID = st.secrets["amazon_api"]["seller_id"]
 
             for i, row in d1.iterrows():
                 curr = i + 1
@@ -127,11 +136,11 @@ with tab1:
                             peso_id = val/1000 if 'g' in match.group(2) else val
                     except: peso_id = 0.5
 
-                offers, _ = recupera_prezzi_indistruttibile(asin, creds)
+                offers, _ = recupera_prezzi_indistruttibile(asin, creds_global)
                 mio, bb = 0.0, 0.0
                 if offers:
                     bb = round(float(offers[0].get('ListingPrice',{}).get('Amount',0)) + float(offers[0].get('Shipping',{}).get('Amount',0)), 2)
-                    mia_o = next((o for o in offers if o.get('MyOffer') or str(o.get('SellerId')) == MIO_ID), None)
+                    mia_o = next((o for o in offers if o.get('MyOffer') or str(o.get('SellerId')) == MIO_ID_GLOBAL), None)
                     if mia_o: mio = round(float(mia_o.get('ListingPrice',{}).get('Amount',0)) + float(mia_o.get('Shipping',{}).get('Amount',0)), 2)
                 
                 target_min = calcola_target_es(costo_base, peso_id, molt)
@@ -148,7 +157,8 @@ with tab1:
 
         if 'report_es' in st.session_state:
             df = st.session_state['report_es']
-            st.subheader("🤖 Repricer con Analisi Margine")
+            st.subheader("🤖 Repricer Decisionale")
+            
             proposte = []
             for _, r in df.iterrows():
                 nuovo = r['Precio Actual']
@@ -163,32 +173,31 @@ with tab1:
                     c_db = res_c[0] if res_c else 0
                     molt_r = int(r['SKU'].split("_")[-1]) if "_" in r['SKU'] else 1
                     margine_nuovo = calcola_margine_netto(nuovo, c_db, r['Peso'], molt_r)
+                    
                     proposte.append({
                         'SKU': r['SKU'], 'Attuale': r['Precio Actual'], 'Nuovo': nuovo, 
                         'BB': r['BB'], 'Margine Previsto €': margine_nuovo,
                         'Diff Margine': round(margine_nuovo - r['Margine € (Attuale)'], 2)
                     })
+            
             if proposte:
                 st.dataframe(pd.DataFrame(proposte).style.background_gradient(subset=['Margine Previsto €'], cmap='RdYlGn'))
-                if st.button("✅ APPLICA E INVIA AD AMAZON"):
-                    fid, err = applica_nuovi_prezzi([{'sku': p['SKU'], 'price': p['Nuovo']} for p in proposte], creds)
-                    if fid: st.success(f"Feed inviato! ID: {fid}")
-                    else: st.error(err)
+                if st.button("🚀 INVIA NUOVI PREZZI AD AMAZON"):
+                    fid, err = applica_nuovi_prezzi([{'sku': p['SKU'], 'price': p['Nuovo']} for p in proposte], creds_global)
+                    if fid: st.success(f"✅ Feed inviato con successo! ID: {fid}")
+                    else: st.error(f"❌ Errore: {err}")
+            else:
+                st.info("✅ Tutti i prezzi sono già ottimizzati.")
             st.dataframe(df)
 
 with tab2:
     st.header("⚙️ Sincronizzazione Listino Master")
-    st.info("Carica qui il file Excel con SKU, COSTO, PESO, NOME per popolare il database.")
-    
-    # QUESTO È IL TASTO CHE CERCAVI
     f_master = st.file_uploader("Seleziona il file Excel Master", type=['xlsx'], key="master_file_uploader")
-    
     if f_master:
         if st.button("🔄 Importa / Aggiorna Database"):
             try:
                 df_m = pd.read_excel(f_master)
                 df_m.columns = [str(c).upper().strip() for c in df_m.columns]
-                
                 m_sku = next(c for c in df_m.columns if 'SKU' in c)
                 m_costo = next(c for c in df_m.columns if 'COSTO' in c)
                 m_peso = next(c for c in df_m.columns if 'PESO' in c)
@@ -202,8 +211,7 @@ with tab2:
                     """, (sku_val, float(r[m_costo]), float(r[m_peso]), str(r[m_nome])))
                 conn.commit()
                 st.success("✅ Database Master popolato correttamente!")
-            except Exception as e:
-                st.error(f"Errore: {e}")
+            except Exception as e: st.error(f"Errore: {e}")
 
 with tab3:
     st.header("💾 Backup Database")
