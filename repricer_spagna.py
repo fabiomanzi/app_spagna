@@ -44,10 +44,12 @@ def calcola_target_es(costo_un, peso, moltiplicatore):
 
 # --- 3. FUNZIONI API ---
 def applica_nuovi_prezzi(lista_cambiamenti, creds):
-    # Inizializzazione corretta
+    from sp_api.api import Feeds
+    import io
     obj_feed = Feeds(credentials=creds, marketplace=Marketplaces.ES)
     seller_id = st.secrets["amazon_api"]["seller_id"]
     
+    # 1. Preparazione XML
     xml_header = f'<?xml version="1.0" encoding="utf-8"?><AmazonEnvelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="amzn-envelope.xsd"><Header><DocumentVersion>1.01</DocumentVersion><MerchantIdentifier>{seller_id}</MerchantIdentifier></Header><MessageType>Price</MessageType>'
     messages = "".join([f"<Message><MessageID>{i+1}</MessageID><Price><SKU>{item['sku']}</SKU><StandardPrice currency='EUR'>{item['price']}</StandardPrice></Price></Message>" for i, item in enumerate(lista_cambiamenti)])
     full_xml = xml_header + messages + "</AmazonEnvelope>"
@@ -59,17 +61,16 @@ def applica_nuovi_prezzi(lista_cambiamenti, creds):
         doc_res = obj_feed.create_feed_document(file=file_data, content_type="text/xml")
         doc_id = doc_res.payload.get("feedDocumentId")
         
-        # FASE 2: Invio Feed 
-        # Forziamo marketplaceIds come lista di stringhe (richiesto da molte versioni della libreria)
+        # FASE 2: Invio Feed (Correzione Posizionale per V20210630)
+        # La tua versione vuole: create_feed(feed_type, input_feed_document_id, **kwargs)
         res = obj_feed.create_feed(
-            feedType=FeedType.POST_PRODUCT_PRICING_DATA,
-            inputFeedDocumentId=doc_id,
-            marketplaceIds=["A1RKKUPIHCS9HS"] 
+            FeedType.POST_PRODUCT_PRICING_DATA, # Primo argomento: feed_type
+            doc_id,                             # Secondo argomento: input_feed_document_id
+            marketplaceIds=["A1RKKUPIHCS9HS"]   # Argomenti extra nominativi
         )
         return res.payload.get("feedId"), None
     except Exception as e:
         return None, f"Errore Tecnico: {str(e)}"
-
 def recupera_prezzi_es(asin, creds):
     obj_p = Products(credentials=creds, marketplace=Marketplaces.ES)
     try:
