@@ -59,7 +59,7 @@ def calcola_target_es(costo_un, peso, moltiplicatore):
         return round((costi_fissi / denominatore) * 1.22, 2)
     except: return 0
 
-# --- 4. FUNZIONI API (NUOVO STANDARD) ---
+# --- 4. FUNZIONI API (VERSIONE AGGIORNATA) ---
 def recupera_prezzi_indistruttibile(asin, creds):
     obj_p = Products(credentials=creds, marketplace=Marketplaces.ES)
     for t in range(3):
@@ -84,17 +84,19 @@ def applica_nuovi_prezzi(lista_cambiamenti, creds):
     for i, item in enumerate(lista_cambiamenti):
         messages += f"<Message><MessageID>{i+1}</MessageID><Price><SKU>{item['sku']}</SKU><StandardPrice currency='EUR'>{item['price']}</StandardPrice></Price></Message>"
     full_xml = xml_header + messages + "</AmazonEnvelope>"
+    
+    # Preparazione file per la libreria
+    file_data = io.BytesIO(full_xml.encode('utf-8'))
 
     try:
-        # Fase 1: Creazione Documento
-        doc_res = obj_feed.create_feed_document(contentType="text/xml; charset=UTF-8")
+        # Fase 1: Creazione Documento con parametri espliciti 'file' e 'contentType'
+        doc_res = obj_feed.create_feed_document(
+            file=file_data, 
+            contentType="text/xml; charset=UTF-8"
+        )
         doc_id = doc_res.payload.get("feedDocumentId")
-        put_url = doc_res.payload.get("url")
         
-        # Fase 2: Upload fisico dei dati
-        requests.put(put_url, data=full_xml.encode('utf-8'), headers={'Content-Type': 'text/xml; charset=UTF-8'})
-        
-        # Fase 3: Creazione Feed finale
+        # Fase 2: Creazione Feed collegato al Document ID
         res = obj_feed.create_feed(
             feedType=FeedType.POST_PRODUCT_PRICING_DATA,
             inputFeedDocumentId=doc_id
@@ -107,7 +109,7 @@ def applica_nuovi_prezzi(lista_cambiamenti, creds):
 st.set_page_config(page_title="Amazon ES Repricer Pro", layout="wide")
 st.title("🇪🇸 Amazon Spain Repricer")
 
-# Caricamento credenziali una volta sola
+# Gestione Credenziali
 try:
     creds_global = dict(
         refresh_token=st.secrets["amazon_api"]["refresh_token"], 
@@ -142,7 +144,6 @@ with tab1:
                 db_data = cursor.fetchone()
                 c_base, p_id, n_db = (db_data[0], db_data[1], db_data[2]) if db_data else (0, 0, "N/D")
                 
-                # Scraping peso se mancante
                 if p_id == 0:
                     try:
                         r_scrap = requests.get(f"https://www.amazon.es/dp/{asin}", headers={"User-Agent":"Mozilla/5.0"}, timeout=5)
