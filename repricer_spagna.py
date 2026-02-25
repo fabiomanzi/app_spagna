@@ -59,27 +59,46 @@ def calcola_target_es(costo_un, peso, moltiplicatore):
 # --- 3. FUNZIONI API ---
 def applica_nuovi_prezzi(lista_cambiamenti, creds):
     from sp_api.api import Feeds
+    from sp_api.base import FeedType
     import io
+    
+    # Inizializzazione API
     obj_feed = Feeds(credentials=creds, marketplace=Marketplaces.ES)
     seller_id = st.secrets["amazon_api"]["seller_id"]
     
+    # 1. Costruzione XML (Standard Amazon Price Feed)
     xml_header = f'<?xml version="1.0" encoding="utf-8"?><AmazonEnvelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="amzn-envelope.xsd"><Header><DocumentVersion>1.01</DocumentVersion><MerchantIdentifier>{seller_id}</MerchantIdentifier></Header><MessageType>Price</MessageType>'
-    messages = "".join([f"<Message><MessageID>{i+1}</MessageID><Price><SKU>{item['sku']}</SKU><StandardPrice currency='EUR'>{item['price']}</StandardPrice></Price></Message>" for i, item in enumerate(lista_cambiamenti)])
+    messages = ""
+    for i, item in enumerate(lista_cambiamenti):
+        messages += f"<Message><MessageID>{i+1}</MessageID><Price><SKU>{item['sku']}</SKU><StandardPrice currency='EUR'>{item['price']}</StandardPrice></Price></Message>"
     full_xml = xml_header + messages + "</AmazonEnvelope>"
     
     file_data = io.BytesIO(full_xml.encode('utf-8'))
+
     try:
-        # Passiamo OBBLIGATORIAMENTE il parametro file e content_type
-        doc_res = obj_feed.create_feed_document(file=file_data, content_type="text/xml")
+        # FASE A: Creazione Documento
+        # Usiamo i parametri esatti richiesti dalla tua versione
+        doc_res = obj_feed.create_feed_document(
+            file=file_data, 
+            content_type="text/xml"
+        )
         doc_id = doc_res.payload.get("feedDocumentId")
         
+        if not doc_id:
+            return None, "Errore: Document ID non generato."
+
+        # FASE B: Invio Feed (Qui è dove ricevevi Unauthorized)
+        # Usiamo esclusivamente lo snake_case per i parametri
         res = obj_feed.create_feed(
-            feed_type=FeedType.POST_PRODUCT_PRICING_DATA, 
+            feed_type=FeedType.POST_PRODUCT_PRICING_DATA,
             input_feed_document_id=doc_id
         )
+        
         return res.payload.get("feedId"), None
-    except Exception as e: 
-        return None, str(e)
+
+    except Exception as e:
+        # Se l'errore avviene qui, stampiamo i dettagli per capire se è il doc_id o il feed_type
+        return None, f"Dettaglio Tecnico: {str(e)}"
 
 def recupera_prezzi_indistruttibile(asin, creds):
     obj_p = Products(credentials=creds, marketplace=Marketplaces.ES)
