@@ -60,25 +60,32 @@ def calcola_target_es(costo_un, peso, moltiplicatore):
 def applica_nuovi_prezzi(lista_cambiamenti, creds):
     obj_feed = Feeds(credentials=creds, marketplace=Marketplaces.ES)
     seller_id = st.secrets["amazon_api"]["seller_id"]
+    
     xml_header = f'<?xml version="1.0" encoding="utf-8"?><AmazonEnvelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="amzn-envelope.xsd"><Header><DocumentVersion>1.01</DocumentVersion><MerchantIdentifier>{seller_id}</MerchantIdentifier></Header><MessageType>Price</MessageType>'
     messages = "".join([f"<Message><MessageID>{i+1}</MessageID><Price><SKU>{item['sku']}</SKU><StandardPrice currency='EUR'>{item['price']}</StandardPrice></Price></Message>" for i, item in enumerate(lista_cambiamenti)])
     full_xml = xml_header + messages + "</AmazonEnvelope>"
+    
     file_data = io.BytesIO(full_xml.encode('utf-8'))
     try:
-doc_res = obj_feed.create_feed_document(
-            file=file_data, 
-            content_type="text/xml" # Rimuoviamo il charset per test
-        )        doc_id = doc_res.payload.get("feedDocumentId")
-        res = obj_feed.create_feed(feed_type=FeedType.POST_PRODUCT_PRICING_DATA, input_feed_document_id=doc_id)
+        # Passiamo content_type base per massima compatibilità
+        doc_res = obj_feed.create_feed_document(file=file_data, content_type="text/xml")
+        doc_id = doc_res.payload.get("feedDocumentId")
+        
+        res = obj_feed.create_feed(
+            feed_type=FeedType.POST_PRODUCT_PRICING_DATA, 
+            input_feed_document_id=doc_id
+        )
         return res.payload.get("feedId"), None
-    except Exception as e: return None, str(e)
+    except Exception as e: 
+        return None, str(e)
 
 def recupera_prezzi_indistruttibile(asin, creds):
     obj_p = Products(credentials=creds, marketplace=Marketplaces.ES)
     try:
         r_p = obj_p.get_item_offers(asin, item_condition='New', item_type='Asin')
         return r_p.payload.get('Offers', []), None
-    except Exception as e: return [], str(e)
+    except Exception as e: 
+        return [], str(e)
 
 # --- 4. INTERFACCIA ---
 st.set_page_config(page_title="Amazon ES Repricer Pro", layout="wide")
@@ -90,14 +97,20 @@ try:
         lwa_app_id=st.secrets["amazon_api"]["lwa_app_id"], 
         lwa_client_secret=st.secrets["amazon_api"]["lwa_client_secret"]
     )
+    # Aggiungi chiavi AWS se presenti per la firma dei feed
+    if "aws_access_key" in st.secrets["amazon_api"]:
+        creds_global["aws_access_key"] = st.secrets["amazon_api"]["aws_access_key"]
+        creds_global["aws_secret_key"] = st.secrets["amazon_api"]["aws_secret_key"]
+        creds_global["role_arn"] = st.secrets["amazon_api"].get("role_arn")
+
     MIO_ID_GLOBAL = st.secrets["amazon_api"]["seller_id"]
 except:
     st.error("❌ Secrets non configurati correttamente.")
     st.stop()
 
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Analisi e Repricing", "⚙️ Database Master", "💾 Backup", "🔗 Test Connessione"])
+tab1, tab2, tab3, tab4 = st.tabs(["📊 Analisi e Repricing", "⚙️ Database Master", "💾 Backup", "🔍 Diagnosi Avanzata"])
 
-# --- TAB 1: ANALISI E REPRICER ---
+# --- TAB 1: ANALISI ---
 with tab1:
     f1 = st.file_uploader("Carica File Analisi (SKU + ASIN)", type=['xlsx'], key="up_anal")
     if f1:
@@ -145,90 +158,80 @@ with tab1:
 
         if 'report_es' in st.session_state:
             df = st.session_state['report_es']
-            
             st.subheader("🤖 Proposte di Variazione Prezzo")
             proposte = []
             for _, r in df.iterrows():
                 nuovo = r['Mio Prezzo']
-                # Logica Repricer
                 if r['BuyBox'] > r['Target Max']: nuovo = r['Target Max']
                 elif r['Target Min'] <= r['BuyBox'] <= r['Target Max']: nuovo = r['BuyBox']
                 elif 0 < r['BuyBox'] < r['Target Min']: nuovo = r['Target Min']
                 elif r['BuyBox'] == 0: nuovo = r['Target Max']
                 
                 if nuovo != r['Mio Prezzo'] and nuovo > 0:
-                    # Ricalcolo margine sulla proposta
                     cursor.execute("SELECT costo FROM prodotti WHERE sku=?", (r['ROOT'],))
                     c_res = cursor.fetchone()
                     c_val = c_res[0] if c_res else 0
                     m_nuovo = calcola_margine_netto(nuovo, c_val, r['Peso'], (int(r['SKU'].split("_")[-1]) if "_" in r['SKU'] else 1))
-                    
-                    proposte.append({
-                        'SKU': r['SKU'], 'Attuale': r['Mio Prezzo'], 'Nuovo Prezzo': nuovo, 
-                        'BuyBox': r['BuyBox'], 'Margine Previsto €': m_nuovo,
-                        'Diff': round(nuovo - r['Mio Prezzo'], 2)
-                    })
+                    proposte.append({'SKU': r['SKU'], 'Attuale': r['Mio Prezzo'], 'Nuovo': nuovo, 'Margine Previsto €': m_nuovo})
             
             if proposte:
-                pdf = pd.DataFrame(proposte)
-                st.dataframe(pdf.style.background_gradient(subset=['Margine Previsto €'], cmap='RdYlGn'), use_container_width=True)
-                
-                if st.button("🚀 APPLICA E INVIA NUOVI PREZZI AD AMAZON"):
-                    fid, err = applica_nuovi_prezzi([{'sku': p['SKU'], 'price': p['Nuovo Prezzo']} for p in proposte], creds_global)
-                    if fid: st.success(f"✅ Feed inviato con successo! ID: {fid}")
-                    else: st.error(f"❌ Errore durante l'invio: {err}")
-            else:
-                st.info("✅ Tutti i prezzi sono già ottimizzati rispetto al Target Min.")
-            
-            st.write("### 📊 Dettaglio Analisi Completa")
+                st.dataframe(pd.DataFrame(proposte), use_container_width=True)
+                if st.button("🚀 APPLICA E INVIA AD AMAZON"):
+                    fid, err = applica_nuovi_prezzi([{'sku': p['SKU'], 'price': p['Nuovo']} for p in proposte], creds_global)
+                    if fid: st.success(f"✅ Feed inviato! ID: {fid}")
+                    else: st.error(f"❌ Errore: {err}")
+            st.write("### Dettaglio Completo")
             st.dataframe(df, use_container_width=True)
 
-# --- TAB 2: DATABASE MASTER ---
+# --- TAB 2: DATABASE ---
 with tab2:
-    st.header("⚙️ Sincronizzazione Listino Master")
-    f_master = st.file_uploader("Carica Excel (SKU, COSTO, PESO, NOME)", type=['xlsx'], key="up_mast")
+    f_master = st.file_uploader("Carica Excel Master", type=['xlsx'], key="up_mast")
     if f_master:
         if st.button("🔄 Aggiorna Database"):
-            try:
-                df_m = pd.read_excel(f_master)
-                df_m.columns = [str(c).upper().strip() for c in df_m.columns]
-                c_sku = next(c for c in df_m.columns if 'SKU' in c)
-                c_costo = next(c for c in df_m.columns if 'COSTO' in c)
-                c_peso = next(c for c in df_m.columns if 'PESO' in c)
-                c_nome = next(c for c in df_m.columns if 'NOME' in c)
-
-                for _, r in df_m.iterrows():
-                    sku_root = str(r[c_sku]).split('_')[0].strip()
-                    cursor.execute("""INSERT INTO prodotti (sku, costo, peso, nome) VALUES (?,?,?,?) 
-                                   ON CONFLICT(sku) DO UPDATE SET costo=excluded.costo, peso=excluded.peso, nome=excluded.nome""", 
-                                   (sku_root, float(r[c_costo]), float(r[c_peso]), str(r[c_nome])))
-                conn.commit()
-                st.success("✅ Database aggiornato!")
-            except Exception as e:
-                st.error(f"Errore: {e}")
+            df_m = pd.read_excel(f_master)
+            df_m.columns = [str(c).upper().strip() for c in df_m.columns]
+            c_sku = next(c for c in df_m.columns if 'SKU' in c)
+            c_costo = next(c for c in df_m.columns if 'COSTO' in c)
+            c_peso = next(c for c in df_m.columns if 'PESO' in c)
+            c_nome = next(c for c in df_m.columns if 'NOME' in c)
+            for _, r in df_m.iterrows():
+                sku_root = str(r[c_sku]).split('_')[0].strip()
+                cursor.execute("INSERT INTO prodotti (sku, costo, peso, nome) VALUES (?,?,?,?) ON CONFLICT(sku) DO UPDATE SET costo=excluded.costo, peso=excluded.peso, nome=excluded.nome", (sku_root, float(r[c_costo]), float(r[c_peso]), str(r[c_nome])))
+            conn.commit()
+            st.success("Database aggiornato!")
 
 # --- TAB 3: BACKUP ---
 with tab3:
     df_visual = pd.read_sql("SELECT * FROM prodotti", conn)
-    st.write(f"Prodotti in memoria: {len(df_visual)}")
     st.dataframe(df_visual, use_container_width=True)
-    if st.button("Esporta in CSV"):
-        st.download_button("Scarica Backup", df_visual.to_csv(index=False), "backup.csv")
+    st.download_button("Scarica Backup CSV", df_visual.to_csv(index=False), "backup.csv")
 
-# --- TAB 4: TEST CONNESSIONE ---
+# --- TAB 4: DIAGNOSI AVANZATA ---
 with tab4:
-    if st.button("Diagnosi Profonda Scrittura"):
+    st.header("🔍 Diagnosi Profonda dei Permessi")
+    st.info("Questo test serve a capire perché ricevi 'Unauthorized' durante l'invio.")
+    
+    if st.button("Esegui Analisi Tecnica"):
+        # Test 1: Lettura
         try:
-            from sp_api.api import Feeds
-            obj_f = Feeds(credentials=creds_global, marketplace=Marketplaces.ES)
-            st.write("Tentativo di creazione documento...")
-            # Test senza caricare file, solo richiesta ID
-            res = obj_f.create_feed_document(content_type="text/xml")
-            st.success(f"✅ Successo! ID Documento: {res.payload.get('feedDocumentId')}")
+            obj_p = Products(credentials=creds_global, marketplace=Marketplaces.ES)
+            obj_p.get_item_offers("B00005N5PF", item_condition='New', item_type='Asin')
+            st.success("1. Lettura (Pricing Role): FUNZIONANTE")
         except Exception as e:
-            err_str = str(e)
-            st.error(f"Dettaglio Errore: {err_str}")
-            if "SignatureDoesNotMatch" in err_str:
-                st.warning("⚠️ Problema di Chiavi AWS: Le chiavi Access/Secret non sono corrette o non hanno i permessi IAM.")
-            elif "Access to the resource is forbidden" in err_str:
-                st.warning("⚠️ Problema di Ruoli Seller Central: Amazon non ha ancora abilitato i ruoli Product Listing per questo token.")
+            st.error(f"1. Lettura (Pricing Role): FALLITA - {e}")
+
+        # Test 2: Scrittura (Creazione Documento)
+        try:
+            obj_f = Feeds(credentials=creds_global, marketplace=Marketplaces.ES)
+            res = obj_f.create_feed_document(content_type="text/xml")
+            st.success("2. Scrittura (Product Listing Role): FUNZIONANTE")
+            st.balloons()
+        except Exception as e:
+            err_msg = str(e)
+            st.error(f"2. Scrittura (Product Listing Role): FALLITA")
+            st.code(err_msg)
+            
+            if "Forbidden" in err_msg or "Unauthorized" in err_msg:
+                st.warning("👉 CONCLUSIONE: Il token è valido ma Amazon non ti permette di SCRIVERE. Devi rigenerare il token nel Seller Central DOPO aver salvato i ruoli 'Product Listing'.")
+            elif "SignatureDoesNotMatch" in err_msg:
+                st.warning("👉 CONCLUSIONE: Le tue chiavi AWS (Access/Secret Key) non sono corrette o non hanno i permessi IAM per SP-API.")
