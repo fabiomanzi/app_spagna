@@ -6,7 +6,7 @@ import io
 from sp_api.api import Products, Feeds
 from sp_api.base import Marketplaces, FeedType
 
-# --- 1. DATABASE ---
+# --- 1. CONFIGURAZIONE DATABASE ---
 conn = sqlite3.connect('amazon_spain_final.db', check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute('''CREATE TABLE IF NOT EXISTS prodotti 
@@ -43,17 +43,11 @@ def calcola_target_es(costo_un, peso, moltiplicatore):
     except: return 0
 
 # --- 3. FUNZIONI API ---
-
 def applica_nuovi_prezzi(lista_cambiamenti, creds):
-    from sp_api.api import Feeds
-    from sp_api.base import Marketplaces, FeedType
-    import io
-    
-    # 1. Inizializzazione (Puntiamo alla regione Europa tramite ES)
     obj_feed = Feeds(credentials=creds, marketplace=Marketplaces.ES)
     seller_id = st.secrets["amazon_api"]["seller_id"]
     
-    # 2. Costruzione XML (Formato standard Price Feed)
+    # Costruzione XML Price Feed
     xml_header = (
         '<?xml version="1.0" encoding="utf-8"?>'
         '<AmazonEnvelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
@@ -77,31 +71,32 @@ def applica_nuovi_prezzi(lista_cambiamenti, creds):
     file_data = io.BytesIO(full_xml.encode('utf-8'))
 
     try:
-        # FASE A: Creazione Documento (Sappiamo che funziona dal tuo test OK)
+        # FASE 1: Creazione Documento (Sempre OK)
         doc_res = obj_feed.create_feed_document(file=file_data, content_type="text/xml")
         doc_id = doc_res.payload.get("feedDocumentId")
         
-        # FASE B: Invio Feed (Tentativo 1: Sintassi Standard)
+        # FASE 2: Invio Feed con Fallback per risolvere Unauthorized
         try:
+            # Tentativo 1: Standard con marketplace_ids
             res = obj_feed.create_feed(
                 feed_type=FeedType.POST_PRODUCT_PRICING_DATA,
                 input_feed_document_id=doc_id,
-                marketplace_ids=["A1RKKUPIHCS9HS"] # ID Spagna
+                marketplace_ids=["A1RKKUPIHCS9HS"]
             )
             return res.payload.get("feedId"), None
-            
-        except Exception as e_inner:
-            # FASE C: Fallback (Tentativo 2: Sintassi Minima senza Marketplace IDs)
-            # Spesso negli account Europei il marketplace è già dedotto dal token
-            res = obj_feed.create_feed(
-                feed_type=FeedType.POST_PRODUCT_PRICING_DATA,
-                input_feed_document_id=doc_id
-            )
-            return res.payload.get("feedId"), None
+        except:
+            try:
+                # Tentativo 2: Senza marketplace_ids (lo deduce dal token)
+                res = obj_feed.create_feed(
+                    feed_type=FeedType.POST_PRODUCT_PRICING_DATA,
+                    input_feed_document_id=doc_id
+                )
+                return res.payload.get("feedId"), None
+            except Exception as e:
+                return None, f"Errore Tecnico: {str(e)}"
 
     except Exception as e:
-        # Se entrambi i tentativi falliscono, riportiamo l'errore
-        return None, f"Errore Tecnico Persistente: {str(e)}"
+        return None, f"Errore Documento: {str(e)}"
 
 def recupera_prezzi_es(asin, creds):
     obj_p = Products(credentials=creds, marketplace=Marketplaces.ES)
@@ -110,11 +105,10 @@ def recupera_prezzi_es(asin, creds):
         return r_p.payload.get('Offers', []), None
     except Exception as e: return [], str(e)
 
-# --- 4. INTERFACCIA ---
-st.set_page_config(page_title="Repricer Spagna PRO", layout="wide")
-st.title("🇪🇸 Amazon Spain Repricer")
+# --- 4. INTERFACCIA STREAMLIT ---
+st.set_page_config(page_title="Amazon Spain Repricer", layout="wide")
+st.title("🇪🇸 Amazon Spain: Gestione Prezzi")
 
-# Credenziali
 try:
     creds_global = {
         "refresh_token": st.secrets["amazon_api"]["refresh_token"],
@@ -123,10 +117,10 @@ try:
     }
     MIO_ID_GLOBAL = st.secrets["amazon_api"]["seller_id"]
 except:
-    st.error("⚠️ Verifica i Secrets (ID, Token, Client ID, Secret)")
+    st.error("❌ Configura i Secrets su Streamlit!")
     st.stop()
 
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Analisi e Repricing", "⚙️ Database Master", "💾 Backup", "🔍 Diagnosi"])
+tab1, tab2, tab3, tab4 = st.tabs(["📊 Repricer", "⚙️ Database", "💾 Backup", "🔍 Diagnosi"])
 
 with tab1:
     f1 = st.file_uploader("Carica File (.xlsx)", type=['xlsx'])
@@ -134,7 +128,7 @@ with tab1:
         df_input = pd.read_excel(f1)
         df_input.columns = [str(c).upper().strip() for c in df_input.columns]
         
-        if st.button("🚀 Avvia Analisi Strategica"):
+        if st.button("🚀 Avvia Analisi"):
             risultati = []
             bar = st.progress(0)
             for i, row in df_input.iterrows():
@@ -177,29 +171,29 @@ with tab1:
                     proposte.append({'sku': r['SKU'], 'price': nuovo})
             
             if proposte:
-                st.write(f"Variazioni rilevate: {len(proposte)}")
-                if st.button("🚀 APPLICA E INVIA PREZZI"):
+                st.write(f"Modifiche pronte: {len(proposte)}")
+                if st.button("🚀 INVIA NUOVI PREZZI AD AMAZON"):
                     fid, err = applica_nuovi_prezzi(proposte, creds_global)
-                    if fid: st.success(f"✅ Inviato! Feed ID: {fid}")
+                    if fid: st.success(f"✅ Inviato! ID Feed: {fid}")
                     else: st.error(err)
 
 with tab2:
-    f_master = st.file_uploader("Carica Excel Master", type=['xlsx'], key="mast")
+    f_master = st.file_uploader("Carica Excel Master", type=['xlsx'], key="m_up")
     if f_master:
-        if st.button("🔄 Sincronizza DB"):
+        if st.button("🔄 Aggiorna Database"):
             df_m = pd.read_excel(f_master)
             df_m.columns = [str(c).upper().strip() for c in df_m.columns]
             for _, r in df_m.iterrows():
-                sku = str(r.get('SKU')).split('_')[0]
-                cursor.execute("INSERT INTO prodotti (sku, costo, peso) VALUES (?,?,?) ON CONFLICT(sku) DO UPDATE SET costo=excluded.costo, peso=excluded.peso", (sku, float(r.get('COSTO',0)), float(r.get('PESO',0.5))))
+                sku_r = str(r.get('SKU')).split('_')[0].strip()
+                cursor.execute("INSERT INTO prodotti (sku, costo, peso) VALUES (?,?,?) ON CONFLICT(sku) DO UPDATE SET costo=excluded.costo, peso=excluded.peso", (sku_r, float(r.get('COSTO',0)), float(r.get('PESO',0.5))))
             conn.commit()
-            st.success("Database Master aggiornato!")
+            st.success("Database aggiornato!")
 
 with tab4:
-    if st.button("🔍 Diagnosi Finale"):
+    if st.button("🔍 Esegui Diagnosi"):
         try:
             obj_f = Feeds(credentials=creds_global, marketplace=Marketplaces.ES)
             res = obj_f.create_feed_document(file=io.BytesIO(b"test"), content_type="text/xml")
-            st.success(f"✅ Accesso Scrittura Documento: OK (ID: {res.payload.get('feedDocumentId')})")
+            st.success(f"Connessione OK! ID: {res.payload.get('feedDocumentId')}")
         except Exception as e:
-            st.error(f"❌ Fallimento Diagnosi: {str(e)}")
+            st.error(f"Errore: {str(e)}")
