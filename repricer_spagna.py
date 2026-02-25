@@ -93,31 +93,26 @@ except:
     st.error("❌ Secrets non configurati correttamente.")
     st.stop()
 
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Analisi", "⚙️ Database", "💾 Backup", "🔗 Test Connessione"])
+tab1, tab2, tab3, tab4 = st.tabs(["📊 Analisi e Repricing", "⚙️ Database Master", "💾 Backup", "🔗 Test Connessione"])
 
-# --- TAB 1: ANALISI ---
+# --- TAB 1: ANALISI E REPRICER ---
 with tab1:
     f1 = st.file_uploader("Carica File Analisi (SKU + ASIN)", type=['xlsx'], key="up_anal")
     if f1:
         d1 = pd.read_excel(f1)
         d1.columns = [str(c).strip().upper() for c in d1.columns]
         
-        if st.button("🚀 Avvia Analisi"):
+        if st.button("🚀 Avvia Analisi Strategica"):
             results = []
             bar = st.progress(0)
             status_txt = st.empty()
-            
-            # Controllo se il DB è vuoto prima di iniziare
-            cursor.execute("SELECT COUNT(*) FROM prodotti")
-            if cursor.fetchone()[0] == 0:
-                st.warning("⚠️ Il Database Master è vuoto! Carica prima il listino nella Tab Database.")
             
             for i, row in d1.iterrows():
                 sku_amz = str(row.get('SKU', '')).strip()
                 asin = str(row.get('ASIN', '')).strip().upper()
                 if not sku_amz or not asin: continue
                 
-                status_txt.text(f"Analisi {sku_amz}...")
+                status_txt.text(f"Analisi in corso: {sku_amz}...")
                 molt = int(sku_amz.split("_")[-1]) if "_" in sku_amz and sku_amz.split("_")[-1].isdigit() else 1
                 sku_root = sku_amz.split("_")[0]
 
@@ -134,60 +129,96 @@ with tab1:
                 
                 t_min = calcola_target_es(c_base, p_id, molt)
                 m_att = calcola_margine_netto(mio, c_base, p_id, molt)
-                results.append({"SKU": sku_amz, "ASIN": asin, "Nome": n_db, "Peso": p_id, "Mio Prezzo": mio, "BuyBox": bb, "Target Min": t_min, "Margine €": m_att})
+                
+                results.append({
+                    "SKU": sku_amz, "ROOT": sku_root, "ASIN": asin, "Nome": n_db, "Peso": p_id, 
+                    "Mio Prezzo": mio, "BuyBox": bb, "Target Min": t_min, 
+                    "Target Max": round(t_min * 1.25, 2), "Margine €": m_att
+                })
                 bar.progress((i+1)/len(d1))
-                time.sleep(0.5)
+                time.sleep(0.4)
             
             st.session_state['report_es'] = pd.DataFrame(results)
-            st.success("Analisi completata!")
+            status_txt.text("✅ Analisi completata!")
 
         if 'report_es' in st.session_state:
-            st.dataframe(st.session_state['report_es'], use_container_width=True)
+            df = st.session_state['report_es']
+            
+            st.subheader("🤖 Proposte di Variazione Prezzo")
+            proposte = []
+            for _, r in df.iterrows():
+                nuovo = r['Mio Prezzo']
+                # Logica Repricer
+                if r['BuyBox'] > r['Target Max']: nuovo = r['Target Max']
+                elif r['Target Min'] <= r['BuyBox'] <= r['Target Max']: nuovo = r['BuyBox']
+                elif 0 < r['BuyBox'] < r['Target Min']: nuovo = r['Target Min']
+                elif r['BuyBox'] == 0: nuovo = r['Target Max']
+                
+                if nuovo != r['Mio Prezzo'] and nuovo > 0:
+                    # Ricalcolo margine sulla proposta
+                    cursor.execute("SELECT costo FROM prodotti WHERE sku=?", (r['ROOT'],))
+                    c_res = cursor.fetchone()
+                    c_val = c_res[0] if c_res else 0
+                    m_nuovo = calcola_margine_netto(nuovo, c_val, r['Peso'], (int(r['SKU'].split("_")[-1]) if "_" in r['SKU'] else 1))
+                    
+                    proposte.append({
+                        'SKU': r['SKU'], 'Attuale': r['Mio Prezzo'], 'Nuovo Prezzo': nuovo, 
+                        'BuyBox': r['BuyBox'], 'Margine Previsto €': m_nuovo,
+                        'Diff': round(nuovo - r['Mio Prezzo'], 2)
+                    })
+            
+            if proposte:
+                pdf = pd.DataFrame(proposte)
+                st.dataframe(pdf.style.background_gradient(subset=['Margine Previsto €'], cmap='RdYlGn'), use_container_width=True)
+                
+                if st.button("🚀 APPLICA E INVIA NUOVI PREZZI AD AMAZON"):
+                    fid, err = applica_nuovi_prezzi([{'sku': p['SKU'], 'price': p['Nuovo Prezzo']} for p in proposte], creds_global)
+                    if fid: st.success(f"✅ Feed inviato con successo! ID: {fid}")
+                    else: st.error(f"❌ Errore durante l'invio: {err}")
+            else:
+                st.info("✅ Tutti i prezzi sono già ottimizzati rispetto al Target Min.")
+            
+            st.write("### 📊 Dettaglio Analisi Completa")
+            st.dataframe(df, use_container_width=True)
 
-# --- TAB 2: DATABASE ---
+# --- TAB 2: DATABASE MASTER ---
 with tab2:
-    st.header("⚙️ Importazione Listino Master")
-    st.info("Carica il file Excel con le colonne: SKU, COSTO, PESO, NOME")
-    f_master = st.file_uploader("Carica Master Excel", type=['xlsx'], key="up_mast")
+    st.header("⚙️ Sincronizzazione Listino Master")
+    f_master = st.file_uploader("Carica Excel (SKU, COSTO, PESO, NOME)", type=['xlsx'], key="up_mast")
     if f_master:
-        if st.button("🔄 Importa Master"):
+        if st.button("🔄 Aggiorna Database"):
             try:
                 df_m = pd.read_excel(f_master)
                 df_m.columns = [str(c).upper().strip() for c in df_m.columns]
-                
-                # Mappatura flessibile colonne
-                col_sku = next(c for c in df_m.columns if 'SKU' in c)
-                col_costo = next(c for c in df_m.columns if 'COSTO' in c)
-                col_peso = next(c for c in df_m.columns if 'PESO' in c)
-                col_nome = next(c for c in df_m.columns if 'NOME' in c)
+                c_sku = next(c for c in df_m.columns if 'SKU' in c)
+                c_costo = next(c for c in df_m.columns if 'COSTO' in c)
+                c_peso = next(c for c in df_m.columns if 'PESO' in c)
+                c_nome = next(c for c in df_m.columns if 'NOME' in c)
 
                 for _, r in df_m.iterrows():
-                    sku_root = str(r[col_sku]).split('_')[0].strip()
+                    sku_root = str(r[c_sku]).split('_')[0].strip()
                     cursor.execute("""INSERT INTO prodotti (sku, costo, peso, nome) VALUES (?,?,?,?) 
                                    ON CONFLICT(sku) DO UPDATE SET costo=excluded.costo, peso=excluded.peso, nome=excluded.nome""", 
-                                   (sku_root, float(r[col_costo]), float(r[col_peso]), str(r[col_nome])))
+                                   (sku_root, float(r[c_costo]), float(r[c_peso]), str(r[c_nome])))
                 conn.commit()
-                st.success(f"✅ Importati {len(df_m)} prodotti nel database!")
+                st.success("✅ Database aggiornato!")
             except Exception as e:
-                st.error(f"Errore durante l'importazione: {e}")
+                st.error(f"Errore: {e}")
 
-# --- TAB 3: BACKUP & VISUALIZZAZIONE ---
+# --- TAB 3: BACKUP ---
 with tab3:
-    st.header("💾 Gestione Dati")
     df_visual = pd.read_sql("SELECT * FROM prodotti", conn)
-    st.write(f"Prodotti attualmente nel database: {len(df_visual)}")
+    st.write(f"Prodotti in memoria: {len(df_visual)}")
     st.dataframe(df_visual, use_container_width=True)
-    
-    if st.button("Genera Backup CSV"):
-        st.download_button("Scarica CSV", df_visual.to_csv(index=False), "backup_db_spagna.csv")
+    if st.button("Esporta in CSV"):
+        st.download_button("Scarica Backup", df_visual.to_csv(index=False), "backup.csv")
 
-# --- TAB 4: TEST ---
+# --- TAB 4: TEST CONNESSIONE ---
 with tab4:
-    st.header("🔗 Diagnostica")
-    if st.button("Avvia Test Connessione"):
+    if st.button("Esegui Diagnostica"):
         try:
             obj_test = Products(credentials=creds_global, marketplace=Marketplaces.ES)
-            test_res = obj_test.get_item_offers("B00005N5PF", item_condition='New', item_type='Asin')
-            st.success("✅ Connessione ad Amazon Spagna funzionante!")
+            obj_test.get_item_offers("B00005N5PF", item_condition='New', item_type='Asin')
+            st.success("✅ Connessione Amazon SP-API OK!")
         except Exception as e:
-            st.error(f"❌ Errore: {e}")
+            st.error(f"❌ Errore connessione: {e}")
