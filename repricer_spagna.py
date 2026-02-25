@@ -44,7 +44,7 @@ def calcola_margine_netto(prezzo_vendita, costo_acquisto, peso, moltiplicatore):
         comm_amz = p_ivato * 0.1545
         c_sped = calcola_costo_spedizione_es(peso)
         c_merce = float(costo_acquisto) * moltiplicatore
-        return round((p_ivato / 1.22) - (p_ivato * 0.1545) - c_sped - c_merce, 2)
+        return round(prezzo_netto_iva - comm_amz - c_sped - c_merce, 2)
     except: return 0
 
 def calcola_target_es(costo_un, peso, moltiplicatore):
@@ -75,15 +75,13 @@ def recupera_prezzi_indistruttibile(asin, creds):
     obj_p = Products(credentials=creds, marketplace=Marketplaces.ES)
     try:
         r_p = obj_p.get_item_offers(asin, item_condition='New', item_type='Asin')
-        offers = r_p.payload.get('Offers', [])
-        return (offers, None)
+        return r_p.payload.get('Offers', []), None
     except Exception as e: return [], str(e)
 
 # --- 4. INTERFACCIA ---
-st.set_page_config(page_title="Amazon ES Repricer + Connection Test", layout="wide")
+st.set_page_config(page_title="Amazon ES Repricer Pro", layout="wide")
 st.title("🇪🇸 Amazon Spain: Repricer Strategico")
 
-# Caricamento credenziali
 try:
     creds_global = dict(
         refresh_token=st.secrets["amazon_api"]["refresh_token"], 
@@ -97,57 +95,99 @@ except:
 
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Analisi", "⚙️ Database", "💾 Backup", "🔗 Test Connessione"])
 
-# --- NUOVA TAB: TEST CONNESSIONE ---
-with tab4:
-    st.header("🔗 Diagnostica Amazon SP-API")
-    if st.button("Avvia Test di Connessione"):
-        with st.status("Verifica in corso...", expanded=True) as status:
-            # Test 1: Secrets
-            st.write("1. Controllo formato credenziali...")
-            if len(creds_global['refresh_token']) > 10:
-                st.write("✅ Credenziali caricate correttamente.")
-            else:
-                st.write("❌ Refresh Token sembra troppo corto.")
-            
-            # Test 2: Chiamata API Semplice (Catalog)
-            st.write("2. Test comunicazione con Marketplace Spagna...")
-            try:
-                obj_test = Products(credentials=creds_global, marketplace=Marketplaces.ES)
-                # Proviamo a cercare un ASIN generico (es. un libro famoso) per testare l'autorizzazione
-                test_res = obj_test.get_item_offers("B00005N5PF", item_condition='New', item_type='Asin')
-                st.write("✅ Connessione stabilita con successo!")
-                status.update(label="Test completato: TUTTO OK!", state="complete")
-                st.success("L'app è autorizzata a operare in Spagna.")
-            except Exception as e:
-                err_msg = str(e)
-                st.write(f"❌ Errore rilevato: `{err_msg}`")
-                if "Unauthorized" in err_msg or "403" in err_msg:
-                    st.error("PROBLEMA: L'app non ha i permessi (Unauthorized).")
-                    st.info("💡 Soluzione: Entra in Seller Central Spagna -> Partner Network -> Gestisci le tue App -> Autorizza l'app per questo marketplace.")
-                elif "429" in err_msg:
-                    st.warning("Amazon sta limitando le richieste (Too Many Requests). Attendi 1 minuto.")
-                status.update(label="Test completato: ERRORE TROVATO", state="error")
-
-# --- TAB ANALISI ---
+# --- TAB 1: ANALISI ---
 with tab1:
-    f1 = st.file_uploader("Carica File Analisi (.xlsx)", type=['xlsx'])
+    f1 = st.file_uploader("Carica File Analisi (SKU + ASIN)", type=['xlsx'], key="up_anal")
     if f1:
         d1 = pd.read_excel(f1)
-        # (Il resto della logica rimane uguale...)
+        d1.columns = [str(c).strip().upper() for c in d1.columns]
+        
         if st.button("🚀 Avvia Analisi"):
-            # Analisi...
-            pass
+            results = []
+            bar = st.progress(0)
+            status_txt = st.empty()
+            
+            # Controllo se il DB è vuoto prima di iniziare
+            cursor.execute("SELECT COUNT(*) FROM prodotti")
+            if cursor.fetchone()[0] == 0:
+                st.warning("⚠️ Il Database Master è vuoto! Carica prima il listino nella Tab Database.")
+            
+            for i, row in d1.iterrows():
+                sku_amz = str(row.get('SKU', '')).strip()
+                asin = str(row.get('ASIN', '')).strip().upper()
+                if not sku_amz or not asin: continue
+                
+                status_txt.text(f"Analisi {sku_amz}...")
+                molt = int(sku_amz.split("_")[-1]) if "_" in sku_amz and sku_amz.split("_")[-1].isdigit() else 1
+                sku_root = sku_amz.split("_")[0]
 
-# --- TAB DATABASE ---
+                cursor.execute("SELECT costo, peso, nome FROM prodotti WHERE sku=?", (sku_root,))
+                db_data = cursor.fetchone()
+                c_base, p_id, n_db = (db_data[0], db_data[1], db_data[2]) if db_data else (0, 0, "Non in Database")
+                
+                offers, _ = recupera_prezzi_indistruttibile(asin, creds_global)
+                mio, bb = 0.0, 0.0
+                if offers:
+                    bb = round(float(offers[0].get('ListingPrice',{}).get('Amount',0)) + float(offers[0].get('Shipping',{}).get('Amount',0)), 2)
+                    mia_o = next((o for o in offers if str(o.get('SellerId')) == MIO_ID_GLOBAL or o.get('MyOffer')), None)
+                    if mia_o: mio = round(float(mia_o.get('ListingPrice',{}).get('Amount',0)) + float(mia_o.get('Shipping',{}).get('Amount',0)), 2)
+                
+                t_min = calcola_target_es(c_base, p_id, molt)
+                m_att = calcola_margine_netto(mio, c_base, p_id, molt)
+                results.append({"SKU": sku_amz, "ASIN": asin, "Nome": n_db, "Peso": p_id, "Mio Prezzo": mio, "BuyBox": bb, "Target Min": t_min, "Margine €": m_att})
+                bar.progress((i+1)/len(d1))
+                time.sleep(0.5)
+            
+            st.session_state['report_es'] = pd.DataFrame(results)
+            st.success("Analisi completata!")
+
+        if 'report_es' in st.session_state:
+            st.dataframe(st.session_state['report_es'], use_container_width=True)
+
+# --- TAB 2: DATABASE ---
 with tab2:
-    f_master = st.file_uploader("Carica Master Excel", type=['xlsx'])
+    st.header("⚙️ Importazione Listino Master")
+    st.info("Carica il file Excel con le colonne: SKU, COSTO, PESO, NOME")
+    f_master = st.file_uploader("Carica Master Excel", type=['xlsx'], key="up_mast")
     if f_master:
         if st.button("🔄 Importa Master"):
-            # Import...
-            pass
+            try:
+                df_m = pd.read_excel(f_master)
+                df_m.columns = [str(c).upper().strip() for c in df_m.columns]
+                
+                # Mappatura flessibile colonne
+                col_sku = next(c for c in df_m.columns if 'SKU' in c)
+                col_costo = next(c for c in df_m.columns if 'COSTO' in c)
+                col_peso = next(c for c in df_m.columns if 'PESO' in c)
+                col_nome = next(c for c in df_m.columns if 'NOME' in c)
 
-# --- TAB BACKUP ---
+                for _, r in df_m.iterrows():
+                    sku_root = str(r[col_sku]).split('_')[0].strip()
+                    cursor.execute("""INSERT INTO prodotti (sku, costo, peso, nome) VALUES (?,?,?,?) 
+                                   ON CONFLICT(sku) DO UPDATE SET costo=excluded.costo, peso=excluded.peso, nome=excluded.nome""", 
+                                   (sku_root, float(r[col_costo]), float(r[col_peso]), str(r[col_nome])))
+                conn.commit()
+                st.success(f"✅ Importati {len(df_m)} prodotti nel database!")
+            except Exception as e:
+                st.error(f"Errore durante l'importazione: {e}")
+
+# --- TAB 3: BACKUP & VISUALIZZAZIONE ---
 with tab3:
-    if st.button("Scarica Database attuale"):
-        df_db = pd.read_sql("SELECT * FROM prodotti", conn)
-        st.download_button("Download CSV", df_db.to_csv(index=False), "backup_spagna.csv")
+    st.header("💾 Gestione Dati")
+    df_visual = pd.read_sql("SELECT * FROM prodotti", conn)
+    st.write(f"Prodotti attualmente nel database: {len(df_visual)}")
+    st.dataframe(df_visual, use_container_width=True)
+    
+    if st.button("Genera Backup CSV"):
+        st.download_button("Scarica CSV", df_visual.to_csv(index=False), "backup_db_spagna.csv")
+
+# --- TAB 4: TEST ---
+with tab4:
+    st.header("🔗 Diagnostica")
+    if st.button("Avvia Test Connessione"):
+        try:
+            obj_test = Products(credentials=creds_global, marketplace=Marketplaces.ES)
+            test_res = obj_test.get_item_offers("B00005N5PF", item_condition='New', item_type='Asin')
+            st.success("✅ Connessione ad Amazon Spagna funzionante!")
+        except Exception as e:
+            st.error(f"❌ Errore: {e}")
