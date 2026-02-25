@@ -37,20 +37,13 @@ def calcola_costo_spedizione_es(peso):
 
 # --- 3. FORMULE COMMERCIALI ---
 def calcola_margine_netto(prezzo_vendita, costo_acquisto, peso, moltiplicatore):
-    """Calcola quanto resta in tasca dopo IVA (22%), Commissione (15.45%) e Spedizione"""
     try:
         p_ivato = float(prezzo_vendita)
         if p_ivato <= 0: return 0
-        
-        # Scorporo IVA 22%
         prezzo_netto_iva = p_ivato / 1.22
-        # Commissione Amazon sul prezzo ivato (15.45% di solito calcolato sul totale)
         comm_amz = p_ivato * 0.1545
-        # Costo spedizione e costo merce totale
         c_sped = calcola_costo_spedizione_es(peso)
         c_merce = float(costo_acquisto) * moltiplicatore
-        
-        # Margine = Ricavo Netto IVA - Commissione - Spedizione - Costo Merce
         margine = prezzo_netto_iva - comm_amz - c_sped - c_merce
         return round(margine, 2)
     except: return 0
@@ -59,9 +52,8 @@ def calcola_target_es(costo_un, peso, moltiplicatore):
     try:
         costo_tot_merce = float(costo_un) * moltiplicatore
         costo_sped = calcola_costo_spedizione_es(peso)
-        ricarico_fisso = costo_tot_merce * 0.10 # Il tuo ricarico desiderato
+        ricarico_fisso = costo_tot_merce * 0.10 
         costi_fissi = costo_tot_merce + costo_sped + ricarico_fisso
-        # Denominatore per scorporo tasse e commissioni
         denominatore = 1 - 0.04 - (0.1545 * 1.22)
         return round((costi_fissi / denominatore) * 1.22, 2)
     except: return 0
@@ -100,7 +92,7 @@ st.title("🇪🇸 Amazon Spain: Strategic Repricer & Margin Tool")
 tab1, tab2, tab3 = st.tabs(["📊 Analisi e Repricing", "⚙️ Database Master", "💾 Backup"])
 
 with tab1:
-    f1 = st.file_uploader("Carica File SKU + ASIN (.es)", type=['xlsx'])
+    f1 = st.file_uploader("Carica File SKU + ASIN (.es)", type=['xlsx'], key="analis_upload")
     if f1:
         d1 = pd.read_excel(f1)
         d1.columns = [str(c).strip().upper() for c in d1.columns]
@@ -110,7 +102,9 @@ with tab1:
         if st.button("🚀 Avvia Analisi Strategica"):
             results = []
             bar = st.progress(0); status = st.empty()
-            creds = dict(refresh_token=st.secrets["amazon_api"]["refresh_token"], lwa_app_id=st.secrets["amazon_api"]["lwa_app_id"], lwa_client_secret=st.secrets["amazon_api"]["lwa_client_secret"])
+            creds = dict(refresh_token=st.secrets["amazon_api"]["refresh_token"], 
+                         lwa_app_id=st.secrets["amazon_api"]["lwa_app_id"], 
+                         lwa_client_secret=st.secrets["amazon_api"]["lwa_client_secret"])
             MIO_ID = st.secrets["amazon_api"]["seller_id"]
 
             for i, row in d1.iterrows():
@@ -124,7 +118,6 @@ with tab1:
                 db_data = cursor.fetchone()
                 costo_base, peso_id, nome_db = (db_data[0], db_data[1], db_data[2]) if db_data else (0, 0, "N/D")
                 
-                # Peso via scraping se 0
                 if peso_id == 0:
                     try:
                         resp = requests.get(f"https://www.amazon.es/dp/{asin}", headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
@@ -156,43 +149,64 @@ with tab1:
         if 'report_es' in st.session_state:
             df = st.session_state['report_es']
             st.subheader("🤖 Repricer con Analisi Margine")
-            
             proposte = []
             for _, r in df.iterrows():
                 nuovo = r['Precio Actual']
-                # Logica Repricing
                 if r['BB'] > r['Target Max']: nuovo = r['Target Max']
                 elif r['Target Min'] <= r['BB'] <= r['Target Max']: nuovo = r['BB']
                 elif 0 < r['BB'] < r['Target Min']: nuovo = r['Target Min']
                 elif r['BB'] == 0: nuovo = r['Target Max']
                 
                 if nuovo != r['Precio Actual'] and nuovo > 0:
-                    # Calcoliamo il margine che avremmo con il nuovo prezzo proposto
-                    margine_nuovo = calcola_margine_netto(nuovo, r['Costo' if 'Costo' in r else 0], r['Peso'], r['Pezzi' if 'Pezzi' in r else 1]) # Nota: recupero dinamico dati se disponibili
-                    # Per sicurezza usiamo i dati riga
                     cursor.execute("SELECT costo FROM prodotti WHERE sku=?", (r['ROOT'],))
-                    c_db = cursor.fetchone()[0]
+                    res_c = cursor.fetchone()
+                    c_db = res_c[0] if res_c else 0
                     molt_r = int(r['SKU'].split("_")[-1]) if "_" in r['SKU'] else 1
                     margine_nuovo = calcola_margine_netto(nuovo, c_db, r['Peso'], molt_r)
-
                     proposte.append({
                         'SKU': r['SKU'], 'Attuale': r['Precio Actual'], 'Nuovo': nuovo, 
                         'BB': r['BB'], 'Margine Previsto €': margine_nuovo,
                         'Diff Margine': round(margine_nuovo - r['Margine € (Attuale)'], 2)
                     })
-            
             if proposte:
-                st.write("### 🚀 Proposte di Cambio Prezzo")
                 st.dataframe(pd.DataFrame(proposte).style.background_gradient(subset=['Margine Previsto €'], cmap='RdYlGn'))
-                
                 if st.button("✅ APPLICA E INVIA AD AMAZON"):
                     fid, err = applica_nuovi_prezzi([{'sku': p['SKU'], 'price': p['Nuovo']} for p in proposte], creds)
                     if fid: st.success(f"Feed inviato! ID: {fid}")
                     else: st.error(err)
-            else:
-                st.info("Tutti i prezzi sono già nel range ottimale di profitto.")
-            
-            st.write("### 📋 Report Completo")
             st.dataframe(df)
 
-# Le tab 2 e 3 rimangono uguali per Master e Backup
+with tab2:
+    st.header("⚙️ Sincronizzazione Listino Master")
+    st.info("Carica qui il file Excel con SKU, COSTO, PESO, NOME per popolare il database.")
+    
+    # QUESTO È IL TASTO CHE CERCAVI
+    f_master = st.file_uploader("Seleziona il file Excel Master", type=['xlsx'], key="master_file_uploader")
+    
+    if f_master:
+        if st.button("🔄 Importa / Aggiorna Database"):
+            try:
+                df_m = pd.read_excel(f_master)
+                df_m.columns = [str(c).upper().strip() for c in df_m.columns]
+                
+                m_sku = next(c for c in df_m.columns if 'SKU' in c)
+                m_costo = next(c for c in df_m.columns if 'COSTO' in c)
+                m_peso = next(c for c in df_m.columns if 'PESO' in c)
+                m_nome = next(c for c in df_m.columns if 'NOME' in c)
+
+                for _, r in df_m.iterrows():
+                    sku_val = str(r[m_sku]).split('_')[0].strip()
+                    cursor.execute("""
+                        INSERT INTO prodotti (sku, costo, peso, nome) VALUES (?,?,?,?)
+                        ON CONFLICT(sku) DO UPDATE SET costo=excluded.costo, nome=excluded.nome, peso=excluded.peso
+                    """, (sku_val, float(r[m_costo]), float(r[m_peso]), str(r[m_nome])))
+                conn.commit()
+                st.success("✅ Database Master popolato correttamente!")
+            except Exception as e:
+                st.error(f"Errore: {e}")
+
+with tab3:
+    st.header("💾 Backup Database")
+    if st.button("Genera file di Backup"):
+        df_db = pd.read_sql("SELECT * FROM prodotti", conn)
+        st.download_button("Scarica Backup CSV", df_db.to_csv(index=False), "backup_db_spagna.csv")
