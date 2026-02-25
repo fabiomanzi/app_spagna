@@ -44,7 +44,7 @@ def calcola_target_es(costo_un, peso, moltiplicatore):
 
 # --- 3. FUNZIONI API ---
 def applica_nuovi_prezzi(lista_cambiamenti, creds):
-    # Usiamo il Marketplace Spagna esplicitamente
+    # Inizializzazione corretta
     obj_feed = Feeds(credentials=creds, marketplace=Marketplaces.ES)
     seller_id = st.secrets["amazon_api"]["seller_id"]
     
@@ -55,16 +55,16 @@ def applica_nuovi_prezzi(lista_cambiamenti, creds):
     file_data = io.BytesIO(full_xml.encode('utf-8'))
     
     try:
-        # FASE 1: Creazione Documento (Dovrebbe essere OK)
+        # FASE 1: Creazione Documento
         doc_res = obj_feed.create_feed_document(file=file_data, content_type="text/xml")
         doc_id = doc_res.payload.get("feedDocumentId")
         
-        # FASE 2: Invio Feed (Punto critico)
-        # Alcune versioni della libreria richiedono marketplace_ids come lista
+        # FASE 2: Invio Feed 
+        # Forziamo marketplaceIds come lista di stringhe (richiesto da molte versioni della libreria)
         res = obj_feed.create_feed(
             feedType=FeedType.POST_PRODUCT_PRICING_DATA,
             inputFeedDocumentId=doc_id,
-            marketplaceIds=["A1RKKUPIHCS9HS"] # ID Fisso Spagna
+            marketplaceIds=["A1RKKUPIHCS9HS"] 
         )
         return res.payload.get("feedId"), None
     except Exception as e:
@@ -81,7 +81,6 @@ def recupera_prezzi_es(asin, creds):
 st.set_page_config(page_title="Repricer Spagna PRO", layout="wide")
 st.title("🇪🇸 Amazon Spain Repricer")
 
-# Caricamento Credenziali
 try:
     creds_global = {
         "refresh_token": st.secrets["amazon_api"]["refresh_token"],
@@ -89,7 +88,7 @@ try:
         "lwa_client_secret": st.secrets["amazon_api"]["lwa_client_secret"],
     }
     MIO_ID_GLOBAL = st.secrets["amazon_api"]["seller_id"]
-except Exception as e:
+except:
     st.error("Controlla i Secrets!")
     st.stop()
 
@@ -109,14 +108,12 @@ with tab1:
                 asin = str(row.get('ASIN', '')).strip().upper()
                 if not sku or not asin: continue
                 
-                # Calcoli DB
                 molt = int(sku.split("_")[-1]) if "_" in sku and sku.split("_")[-1].isdigit() else 1
                 sku_root = sku.split("_")[0]
                 cursor.execute("SELECT costo, peso FROM prodotti WHERE sku=?", (sku_root,))
                 data = cursor.fetchone()
                 c_base, peso = (data[0], data[1]) if data else (0, 0.5)
                 
-                # API Prezzi
                 offers, _ = recupera_prezzi_es(asin, creds_global)
                 mio, bb = 0.0, 0.0
                 if offers:
@@ -133,27 +130,16 @@ with tab1:
         if 'es_rep' in st.session_state:
             df = st.session_state['es_rep']
             st.dataframe(df)
-            
-            proposte = []
-            for _, r in df.iterrows():
-                nuovo = r['Mio']
-                if r['BB'] > r['Max']: nuovo = r['Max']
-                elif r['Min'] <= r['BB'] <= r['Max']: nuovo = r['BB']
-                elif 0 < r['BB'] < r['Min']: nuovo = r['Min']
-                elif r['BB'] == 0: nuovo = r['Max']
-                
-                if nuovo != r['Mio'] and nuovo > 0:
-                    proposte.append({'sku': r['SKU'], 'price': nuovo})
+            proposte = [{'sku': r['SKU'], 'price': r['BB'] if r['Min'] <= r['BB'] <= r['Max'] else r['Min']} 
+                        for _, r in df.iterrows() if r['BB'] > 0]
             
             if proposte:
-                st.write(f"Variazioni pronte: {len(proposte)}")
                 if st.button("🚀 INVIA PREZZI AD AMAZON"):
                     fid, err = applica_nuovi_prezzi(proposte, creds_global)
                     if fid: st.success(f"Inviato! ID: {fid}")
                     else: st.error(err)
 
 with tab2:
-    # Codice importazione database... (uguale al precedente)
     f_master = st.file_uploader("Carica Master", type=['xlsx'])
     if f_master:
         if st.button("Aggiorna DB"):
@@ -166,10 +152,11 @@ with tab2:
             st.success("DB OK")
 
 with tab4:
-    if st.button("Test Finale"):
+    if st.button("Esegui Test Diagnosi"):
         try:
+            # Qui il riferimento era sbagliato, ora è corretto obj_f
             obj_f = Feeds(credentials=creds_global, marketplace=Marketplaces.ES)
-            res = obj_feed.create_feed_document(file=io.BytesIO(b"test"), content_type="text/xml")
-            st.write("Doc creato con successo.")
+            res = obj_f.create_feed_document(file=io.BytesIO(b"test"), content_type="text/xml")
+            st.success(f"Test scrittura passato! ID Documento: {res.payload.get('feedDocumentId')}")
         except Exception as e:
-            st.error(str(e))
+            st.error(f"Errore diagnosi: {str(e)}")
