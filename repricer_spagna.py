@@ -65,8 +65,10 @@ def applica_nuovi_prezzi(lista_cambiamenti, creds):
     full_xml = xml_header + messages + "</AmazonEnvelope>"
     file_data = io.BytesIO(full_xml.encode('utf-8'))
     try:
-        doc_res = obj_feed.create_feed_document(file=file_data, content_type="text/xml; charset=UTF-8")
-        doc_id = doc_res.payload.get("feedDocumentId")
+doc_res = obj_feed.create_feed_document(
+            file=file_data, 
+            content_type="text/xml" # Rimuoviamo il charset per test
+        )        doc_id = doc_res.payload.get("feedDocumentId")
         res = obj_feed.create_feed(feed_type=FeedType.POST_PRODUCT_PRICING_DATA, input_feed_document_id=doc_id)
         return res.payload.get("feedId"), None
     except Exception as e: return None, str(e)
