@@ -44,35 +44,53 @@ def calcola_target_es(costo_un, peso, moltiplicatore):
 
 # --- 3. FUNZIONI API ---
 def applica_nuovi_prezzi(lista_cambiamenti, creds):
-    # Forziamo l'uso del marketplace spagnolo
+    # Marketplace ID Spagna: A1RKKUPIHCS9HS
+    marketplace_spagna = "A1RKKUPIHCS9HS"
+    
+    # Inizializziamo l'oggetto Feed forzando la regione Europa
     obj_feed = Feeds(credentials=creds, marketplace=Marketplaces.ES)
     seller_id = st.secrets["amazon_api"]["seller_id"]
     
-    # XML Header standard
-    xml_header = f'<?xml version="1.0" encoding="utf-8"?><AmazonEnvelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="amzn-envelope.xsd"><Header><DocumentVersion>1.01</DocumentVersion><MerchantIdentifier>{seller_id}</MerchantIdentifier></Header><MessageType>Price</MessageType>'
-    messages = "".join([f"<Message><MessageID>{i+1}</MessageID><Price><SKU>{item['sku']}</SKU><StandardPrice currency='EUR'>{item['price']}</StandardPrice></Price></Message>" for i, item in enumerate(lista_cambiamenti)])
-    full_xml = xml_header + messages + "</AmazonEnvelope>"
+    # Costruzione XML Price Feed
+    xml_header = (
+        '<?xml version="1.0" encoding="utf-8"?>'
+        '<AmazonEnvelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+        'xsi:noNamespaceSchemaLocation="amzn-envelope.xsd">'
+        '<Header>'
+        f'<DocumentVersion>1.01</DocumentVersion><MerchantIdentifier>{seller_id}</MerchantIdentifier>'
+        '</Header>'
+        '<MessageType>Price</MessageType>'
+    )
     
+    messages = ""
+    for i, item in enumerate(lista_cambiamenti):
+        messages += (
+            f"<Message><MessageID>{i+1}</MessageID>"
+            f"<Price><SKU>{item['sku']}</SKU>"
+            f"<StandardPrice currency='EUR'>{item['price']}</StandardPrice></Price>"
+            f"</Message>"
+        )
+    
+    full_xml = xml_header + messages + "</AmazonEnvelope>"
     file_data = io.BytesIO(full_xml.encode('utf-8'))
     
     try:
-        # FASE 1: Creazione Documento
+        # FASE 1: Creazione Documento (Caricamento dati)
         doc_res = obj_feed.create_feed_document(file=file_data, content_type="text/xml")
         doc_id = doc_res.payload.get("feedDocumentId")
         
-        # FASE 2: Invio Feed (Formato posizionale corazzato per Unauthorized)
-        # Alcuni account richiedono marketplaceIds come lista di stringhe
+        # FASE 2: Invio Feed (Esecuzione)
+        # Usiamo i nomi dei parametri corretti per la tua versione e specifichiamo la lista marketplace_ids
         res = obj_feed.create_feed(
             feed_type=FeedType.POST_PRODUCT_PRICING_DATA,
             input_feed_document_id=doc_id,
-            marketplaceIds=["A1RKKUPIHCS9HS"]  # Marketplace ID fisso Spagna
+            marketplace_ids=[marketplace_spagna] 
         )
         return res.payload.get("feedId"), None
     except Exception as e:
-        return None, f"Errore Tecnico: {str(e)}"
+        return None, f"Dettaglio Tecnico: {str(e)}"
 
 def recupera_prezzi_es(asin, creds):
-    from sp_api.api import Products
     obj_p = Products(credentials=creds, marketplace=Marketplaces.ES)
     try:
         r_p = obj_p.get_item_offers(asin, item_condition='New', item_type='Asin')
@@ -83,23 +101,19 @@ def recupera_prezzi_es(asin, creds):
 st.set_page_config(page_title="Repricer Spagna PRO", layout="wide")
 st.title("🇪🇸 Amazon Spain Repricer")
 
+# Credenziali
 try:
     creds_global = {
         "refresh_token": st.secrets["amazon_api"]["refresh_token"],
         "lwa_app_id": st.secrets["amazon_api"]["lwa_app_id"],
         "lwa_client_secret": st.secrets["amazon_api"]["lwa_client_secret"],
     }
-    # Se hai configurato le chiavi AWS nei secrets, le aggiungiamo
-    if "aws_access_key" in st.secrets["amazon_api"]:
-        creds_global["aws_access_key"] = st.secrets["amazon_api"]["aws_access_key"]
-        creds_global["aws_secret_key"] = st.secrets["amazon_api"]["aws_secret_key"]
-    
     MIO_ID_GLOBAL = st.secrets["amazon_api"]["seller_id"]
 except:
-    st.error("⚠️ Verifica i Secrets (ID, Token, Client ID, Secret, AWS Keys)")
+    st.error("⚠️ Verifica i Secrets (ID, Token, Client ID, Secret)")
     st.stop()
 
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Repricer", "⚙️ Database", "💾 Backup", "🔍 Diagnosi"])
+tab1, tab2, tab3, tab4 = st.tabs(["📊 Analisi e Repricing", "⚙️ Database Master", "💾 Backup", "🔍 Diagnosi"])
 
 with tab1:
     f1 = st.file_uploader("Carica File (.xlsx)", type=['xlsx'])
@@ -107,7 +121,7 @@ with tab1:
         df_input = pd.read_excel(f1)
         df_input.columns = [str(c).upper().strip() for c in df_input.columns]
         
-        if st.button("🚀 Avvia Analisi"):
+        if st.button("🚀 Avvia Analisi Strategica"):
             risultati = []
             bar = st.progress(0)
             for i, row in df_input.iterrows():
@@ -137,34 +151,42 @@ with tab1:
         if 'es_rep' in st.session_state:
             df = st.session_state['es_rep']
             st.dataframe(df, use_container_width=True)
-            proposte = [{'sku': r['SKU'], 'price': r['BB'] if r['Min'] <= r['BB'] <= r['Max'] else r['Min']} 
-                        for _, r in df.iterrows() if r['BB'] > 0]
+            
+            proposte = []
+            for _, r in df.iterrows():
+                nuovo = r['Mio']
+                if r['BB'] > r['Max']: nuovo = r['Max']
+                elif r['Min'] <= r['BB'] <= r['Max']: nuovo = r['BB']
+                elif 0 < r['BB'] < r['Min']: nuovo = r['Min']
+                elif r['BB'] == 0: nuovo = r['Max']
+                
+                if nuovo != r['Mio'] and nuovo > 0:
+                    proposte.append({'sku': r['SKU'], 'price': nuovo})
             
             if proposte:
-                if st.button("🚀 INVIA PREZZI AD AMAZON"):
+                st.write(f"Variazioni rilevate: {len(proposte)}")
+                if st.button("🚀 APPLICA E INVIA PREZZI"):
                     fid, err = applica_nuovi_prezzi(proposte, creds_global)
-                    if fid: st.success(f"✅ Inviato con successo! ID: {fid}")
+                    if fid: st.success(f"✅ Inviato! Feed ID: {fid}")
                     else: st.error(err)
 
-# --- Tab Database e Backup (Invariate) ---
 with tab2:
-    f_master = st.file_uploader("Carica Master", type=['xlsx'])
+    f_master = st.file_uploader("Carica Excel Master", type=['xlsx'], key="mast")
     if f_master:
-        if st.button("Aggiorna DB"):
+        if st.button("🔄 Sincronizza DB"):
             df_m = pd.read_excel(f_master)
             df_m.columns = [str(c).upper().strip() for c in df_m.columns]
             for _, r in df_m.iterrows():
                 sku = str(r.get('SKU')).split('_')[0]
                 cursor.execute("INSERT INTO prodotti (sku, costo, peso) VALUES (?,?,?) ON CONFLICT(sku) DO UPDATE SET costo=excluded.costo, peso=excluded.peso", (sku, float(r.get('COSTO',0)), float(r.get('PESO',0.5))))
             conn.commit()
-            st.success("DB OK")
+            st.success("Database Master aggiornato!")
 
 with tab4:
-    if st.button("Test Finale Diagnosi"):
+    if st.button("🔍 Diagnosi Finale"):
         try:
             obj_f = Feeds(credentials=creds_global, marketplace=Marketplaces.ES)
             res = obj_f.create_feed_document(file=io.BytesIO(b"test"), content_type="text/xml")
-            st.success(f"Test scrittura passato! ID Documento: {res.payload.get('feedDocumentId')}")
-            st.info("Se l'invio fallisce ancora, è necessario verificare se le chiavi AWS hanno la policy 'execute-api:Invoke' attiva.")
+            st.success(f"✅ Accesso Scrittura Documento: OK (ID: {res.payload.get('feedDocumentId')})")
         except Exception as e:
-            st.error(f"Errore diagnosi: {str(e)}")
+            st.error(f"❌ Fallimento Diagnosi: {str(e)}")
