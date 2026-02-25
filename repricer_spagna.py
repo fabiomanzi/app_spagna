@@ -216,15 +216,19 @@ with tab3:
         st.download_button("Scarica Backup", df_visual.to_csv(index=False), "backup.csv")
 
 # --- TAB 4: TEST CONNESSIONE ---
-# --- TAB 4: TEST CONNESSIONE AVANZATO ---
 with tab4:
-    if st.button("Test Permessi di Scrittura"):
+    if st.button("Diagnosi Profonda Scrittura"):
         try:
+            from sp_api.api import Feeds
             obj_f = Feeds(credentials=creds_global, marketplace=Marketplaces.ES)
-            # Proviamo solo a creare un'area di caricamento (non invia nulla)
-            res = obj_f.create_feed_document(content_type="text/xml; charset=UTF-8")
-            if res.payload.get("feedDocumentId"):
-                st.success("✅ EVVIVA! Hai i permessi di scrittura. Ora il Repricer funzionerà.")
+            st.write("Tentativo di creazione documento...")
+            # Test senza caricare file, solo richiesta ID
+            res = obj_f.create_feed_document(content_type="text/xml")
+            st.success(f"✅ Successo! ID Documento: {res.payload.get('feedDocumentId')}")
         except Exception as e:
-            st.error(f"❌ Ancora bloccato: {e}")
-            st.info("Se leggi 'Unauthorized', il Refresh Token che stai usando non è stato generato tramite il tasto 'Authorize'.")
+            err_str = str(e)
+            st.error(f"Dettaglio Errore: {err_str}")
+            if "SignatureDoesNotMatch" in err_str:
+                st.warning("⚠️ Problema di Chiavi AWS: Le chiavi Access/Secret non sono corrette o non hanno i permessi IAM.")
+            elif "Access to the resource is forbidden" in err_str:
+                st.warning("⚠️ Problema di Ruoli Seller Central: Amazon non ha ancora abilitato i ruoli Product Listing per questo token.")
