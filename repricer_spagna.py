@@ -49,11 +49,11 @@ def applica_nuovi_prezzi(lista_cambiamenti, creds):
     from sp_api.base import Marketplaces, FeedType
     import io
     
-    # Inizializzazione forzata su Spagna
+    # 1. Inizializzazione (Puntiamo alla regione Europa tramite ES)
     obj_feed = Feeds(credentials=creds, marketplace=Marketplaces.ES)
     seller_id = st.secrets["amazon_api"]["seller_id"]
     
-    # Costruzione XML (Rigorosamente conforme)
+    # 2. Costruzione XML (Formato standard Price Feed)
     xml_header = (
         '<?xml version="1.0" encoding="utf-8"?>'
         '<AmazonEnvelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
@@ -77,31 +77,31 @@ def applica_nuovi_prezzi(lista_cambiamenti, creds):
     file_data = io.BytesIO(full_xml.encode('utf-8'))
 
     try:
-        # 1. Creazione Documento (Sappiamo che funziona dalla Tab 4)
+        # FASE A: Creazione Documento (Sappiamo che funziona dal tuo test OK)
         doc_res = obj_feed.create_feed_document(file=file_data, content_type="text/xml")
         doc_id = doc_res.payload.get("feedDocumentId")
         
-        # 2. Invio Feed - CORREZIONE DEFINITIVA
-        # Proviamo la sintassi più compatibile per la versione V20210630
-        res = obj_feed.create_feed(
-            feed_type=FeedType.POST_PRODUCT_PRICING_DATA,
-            input_feed_document_id=doc_id,
-            marketplace_ids=["A1RKKUPIHCS9HS"]  # Deve essere una LISTA di stringhe
-        )
-        
-        return res.payload.get("feedId"), None
-
-    except Exception as e:
-        # Se fallisce, proviamo un ultimo tentativo con marketplaceIds (senza underscore)
+        # FASE B: Invio Feed (Tentativo 1: Sintassi Standard)
         try:
             res = obj_feed.create_feed(
                 feed_type=FeedType.POST_PRODUCT_PRICING_DATA,
                 input_feed_document_id=doc_id,
-                marketplaceIds=["A1RKKUPIHCS9HS"]
+                marketplace_ids=["A1RKKUPIHCS9HS"] # ID Spagna
             )
             return res.payload.get("feedId"), None
-        except:
-            return None, f"Errore Tecnico Persistente: {str(e)}"
+            
+        except Exception as e_inner:
+            # FASE C: Fallback (Tentativo 2: Sintassi Minima senza Marketplace IDs)
+            # Spesso negli account Europei il marketplace è già dedotto dal token
+            res = obj_feed.create_feed(
+                feed_type=FeedType.POST_PRODUCT_PRICING_DATA,
+                input_feed_document_id=doc_id
+            )
+            return res.payload.get("feedId"), None
+
+    except Exception as e:
+        # Se entrambi i tentativi falliscono, riportiamo l'errore
+        return None, f"Errore Tecnico Persistente: {str(e)}"
 
 def recupera_prezzi_es(asin, creds):
     obj_p = Products(credentials=creds, marketplace=Marketplaces.ES)
