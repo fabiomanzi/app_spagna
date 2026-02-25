@@ -216,22 +216,13 @@ with tab3:
 # --- TAB 4: TEST CONNESSIONE ---
 # --- TAB 4: TEST CONNESSIONE AVANZATO ---
 with tab4:
-    if st.button("Esegui Diagnostica Completa"):
+    if st.button("Test Permessi di Scrittura"):
         try:
-            # Test Lettura
-            obj_p = Products(credentials=creds_global, marketplace=Marketplaces.ES)
-            obj_p.get_item_offers("B00005N5PF", item_condition='New', item_type='Asin')
-            st.success("✅ Test Lettura (Pricing): OK")
-            
-            # Test Scrittura (Proviamo a creare un documento feed vuoto)
             obj_f = Feeds(credentials=creds_global, marketplace=Marketplaces.ES)
-            try:
-                # Chiediamo solo il permesso di creare un documento, senza inviare nulla
-                obj_f.create_feed_document(content_type="text/xml; charset=UTF-8")
-                st.success("✅ Test Scrittura (Product Listing): OK")
-            except Exception as fe:
-                st.error(f"❌ Errore Scrittura: {fe}")
-                st.info("Se la lettura è OK ma la scrittura è Forbidden, devi rigenerare il Refresh Token dopo aver controllato i Roles.")
-                
+            # Proviamo solo a creare un'area di caricamento (non invia nulla)
+            res = obj_f.create_feed_document(content_type="text/xml; charset=UTF-8")
+            if res.payload.get("feedDocumentId"):
+                st.success("✅ EVVIVA! Hai i permessi di scrittura. Ora il Repricer funzionerà.")
         except Exception as e:
-            st.error(f"❌ Errore Generale: {e}")
+            st.error(f"❌ Ancora bloccato: {e}")
+            st.info("Se leggi 'Unauthorized', il Refresh Token che stai usando non è stato generato tramite il tasto 'Authorize'.")
