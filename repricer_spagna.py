@@ -43,16 +43,17 @@ def calcola_target_es(costo_un, peso, moltiplicatore):
     except: return 0
 
 # --- 3. FUNZIONI API ---
+
 def applica_nuovi_prezzi(lista_cambiamenti, creds):
     from sp_api.api import Feeds
     from sp_api.base import Marketplaces, FeedType
     import io
     
-    # Inizializzazione identica alla diagnosi che è risultata OK
+    # Inizializzazione forzata su Spagna
     obj_feed = Feeds(credentials=creds, marketplace=Marketplaces.ES)
     seller_id = st.secrets["amazon_api"]["seller_id"]
     
-    # Costruzione XML (Standard Amazon)
+    # Costruzione XML (Rigorosamente conforme)
     xml_header = (
         '<?xml version="1.0" encoding="utf-8"?>'
         '<AmazonEnvelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
@@ -76,22 +77,32 @@ def applica_nuovi_prezzi(lista_cambiamenti, creds):
     file_data = io.BytesIO(full_xml.encode('utf-8'))
 
     try:
-        # FASE 1: Creazione Documento (Quella che ora funziona!)
+        # 1. Creazione Documento (Sappiamo che funziona dalla Tab 4)
         doc_res = obj_feed.create_feed_document(file=file_data, content_type="text/xml")
         doc_id = doc_res.payload.get("feedDocumentId")
         
-        # FASE 2: Invio Feed 
-        # NOTA: Usiamo marketplaceIds (senza underscore) perché spesso richiesto in V20210630
+        # 2. Invio Feed - CORREZIONE DEFINITIVA
+        # Proviamo la sintassi più compatibile per la versione V20210630
         res = obj_feed.create_feed(
             feed_type=FeedType.POST_PRODUCT_PRICING_DATA,
             input_feed_document_id=doc_id,
-            marketplaceIds=["A1RKKUPIHCS9HS"] 
+            marketplace_ids=["A1RKKUPIHCS9HS"]  # Deve essere una LISTA di stringhe
         )
         
         return res.payload.get("feedId"), None
 
     except Exception as e:
-        return None, f"Dettaglio Tecnico: {str(e)}"
+        # Se fallisce, proviamo un ultimo tentativo con marketplaceIds (senza underscore)
+        try:
+            res = obj_feed.create_feed(
+                feed_type=FeedType.POST_PRODUCT_PRICING_DATA,
+                input_feed_document_id=doc_id,
+                marketplaceIds=["A1RKKUPIHCS9HS"]
+            )
+            return res.payload.get("feedId"), None
+        except:
+            return None, f"Errore Tecnico Persistente: {str(e)}"
+
 def recupera_prezzi_es(asin, creds):
     obj_p = Products(credentials=creds, marketplace=Marketplaces.ES)
     try:
